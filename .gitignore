@@ -1,0 +1,16 @@
+/data/
+/alertmanager
+/amtool
+*.yml
+*.yaml
+/.build
+/.release
+/.tarballs
+
+!/cli/testdata/*.yml
+!/cli/config/testdata/*.yml
+!/doc/examples/simple.yml
+!/circle.yml
+!/.travis.yml
+!/.promu.yml
+!/api/v2/openapi.yaml
