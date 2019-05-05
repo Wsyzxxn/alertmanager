@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -84,6 +85,7 @@ const (
 // IsValid method of LabelName performs the same check but faster than a match
 // with this regular expression.
 var LabelNameRE = regexp.MustCompile("^[a-zA-Z_][a-zA-Z0-9_]*$")
+var LabelNameHZ = regexp.MustCompile(`[\p{Han}]+`)
 
 // A LabelName is a key for a LabelSet or Metric.  It has a value associated
 // therewith.
@@ -97,7 +99,7 @@ func (ln LabelName) IsValid() bool {
 		return false
 	}
 	for i, b := range ln {
-		if !((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_' || (b >= '0' && b <= '9' && i > 0)) {
+		if !((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_' || (b >= '0' && b <= '9' && i > 0) || unicode.Is(unicode.Han, b)) {
 			return false
 		}
 	}

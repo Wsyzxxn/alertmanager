@@ -103,8 +103,8 @@ func run() int {
 	}
 
 	var (
-		configFile        = kingpin.Flag("config.file", "Alertmanager configuration file name.").Default("alertmanager.yml").String()
-		receiverFile      = kingpin.Flag("receiver.file", "Alertmanager configuration file name.").Default("receiver.yml").String()
+		configFile = kingpin.Flag("config.file", "Alertmanager configuration file name.").Default("alertmanager.yml").String()
+		//receiverFile    = kingpin.Flag("receiver.file", "Alertmanager configuration file name.").Default("receiver.yml").String()
 		dataDir         = kingpin.Flag("storage.path", "Base path for data storage.").Default("data/").String()
 		retention       = kingpin.Flag("data.retention", "How long to keep data for.").Default("120h").Duration()
 		alertGCInterval = kingpin.Flag("alerts.gc-interval", "Interval between alert GC.").Default("30m").Duration()
@@ -293,18 +293,18 @@ func run() int {
 	//这里我们计划将alert.yaml 一分为二  这样是为了兼容离线业务   Route  Receivers
 	//我们将Receivers 放到另外一个yaml 对于我这边多次操作来说，是比较方便的
 	//NewCoordinator 对于alertmanager 来说只能是一个
-	/*configCoordinator := config.NewCoordinator(
+	configCoordinator := config.NewCoordinator(
 		*configFile,
 		prometheus.DefaultRegisterer,
 		log.With(logger, "component", "configuration"),
-	)*/
+	)
 
-	configCoordinator := config.NewRealTimeCoordinator(
+	/*configCoordinator := config.NewRealTimeCoordinator(
 		*configFile,
 		*receiverFile,
 		prometheus.DefaultRegisterer,
 		log.With(logger, "component", "configuration"),
-	)
+	)*/
 	configCoordinator.Subscribe(func(conf *config.Config) error {
 		tmpl, err = template.FromGlobs(conf.Templates...)
 		if err != nil {
