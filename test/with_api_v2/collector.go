@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/alertmanager/api/v2/models"
+	"github.com/prometheus/alertmanager/test/with_api_v2/api_v2_client/models"
 )
 
 // Collector gathers alerts received by a notification receiver

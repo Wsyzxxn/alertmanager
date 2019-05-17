@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/go-kit/kit/log"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 
 	"github.com/prometheus/alertmanager/config"
@@ -131,7 +130,7 @@ func TestInhibitRuleHasEqual(t *testing.T) {
 			r.scache.Set(v)
 		}
 
-		if _, have := r.hasEqual(c.input, false); have != c.result {
+		if _, have := r.hasEqual(c.input); have != c.result {
 			t.Errorf("Unexpected result %t, expected %t", have, c.result)
 		}
 	}
@@ -140,87 +139,55 @@ func TestInhibitRuleHasEqual(t *testing.T) {
 func TestInhibitRuleMatches(t *testing.T) {
 	t.Parallel()
 
-	rule1 := config.InhibitRule{
-		SourceMatch: map[string]string{"s1": "1"},
-		TargetMatch: map[string]string{"t1": "1"},
+	// Simple inhibut rule
+	cr := config.InhibitRule{
+		SourceMatch: map[string]string{"s": "1"},
+		TargetMatch: map[string]string{"t": "1"},
 		Equal:       model.LabelNames{"e"},
 	}
-	rule2 := config.InhibitRule{
-		SourceMatch: map[string]string{"s2": "1"},
-		TargetMatch: map[string]string{"t2": "1"},
-		Equal:       model.LabelNames{"e"},
-	}
-	m := types.NewMarker(prometheus.NewRegistry())
-	ih := NewInhibitor(nil, []*config.InhibitRule{&rule1, &rule2}, m, nopLogger)
+	m := types.NewMarker()
+	ih := NewInhibitor(nil, []*config.InhibitRule{&cr}, m, nopLogger)
+	ir := ih.rules[0]
 	now := time.Now()
-	// Active alert that matches the source filter of rule1.
-	sourceAlert1 := &types.Alert{
+	// Active alert that matches the source filter
+	sourceAlert := &types.Alert{
 		Alert: model.Alert{
-			Labels:   model.LabelSet{"s1": "1", "t1": "2", "e": "1"},
-			StartsAt: now.Add(-time.Minute),
-			EndsAt:   now.Add(time.Hour),
-		},
-	}
-	// Active alert that matches the source filter _and_ the target filter of rule2.
-	sourceAlert2 := &types.Alert{
-		Alert: model.Alert{
-			Labels:   model.LabelSet{"s2": "1", "t2": "1", "e": "1"},
+			Labels:   model.LabelSet{"s": "1", "e": "1"},
 			StartsAt: now.Add(-time.Minute),
 			EndsAt:   now.Add(time.Hour),
 		},
 	}
 
-	ih.rules[0].scache = store.NewAlerts(5 * time.Minute)
-	ih.rules[0].scache.Set(sourceAlert1)
-	ih.rules[1].scache = store.NewAlerts(5 * time.Minute)
-	ih.rules[1].scache.Set(sourceAlert2)
+	ir.scache = store.NewAlerts(5 * time.Minute)
+	ir.scache.Set(sourceAlert)
 
 	cases := []struct {
 		target   model.LabelSet
 		expected bool
 	}{
 		{
-			// Matches target filter of rule1, inhibited.
-			target:   model.LabelSet{"t1": "1", "e": "1"},
+			// Matches target filter, inhibited
+			target:   model.LabelSet{"t": "1", "e": "1"},
 			expected: true,
 		},
 		{
-			// Matches target filter of rule2, inhibited.
-			target:   model.LabelSet{"t2": "1", "e": "1"},
+			// Matches target filter (plus noise), inhibited
+			target:   model.LabelSet{"t": "1", "t2": "1", "e": "1"},
 			expected: true,
 		},
 		{
-			// Matches target filter of rule1 (plus noise), inhibited.
-			target:   model.LabelSet{"t1": "1", "t3": "1", "e": "1"},
-			expected: true,
-		},
-		{
-			// Matches target filter of rule1 plus rule2, inhibited.
-			target:   model.LabelSet{"t1": "1", "t2": "1", "e": "1"},
-			expected: true,
-		},
-		{
-			// Doesn't match target filter, not inhibited.
-			target:   model.LabelSet{"t1": "0", "e": "1"},
+			// Doesn't match target filter, not inhibited
+			target:   model.LabelSet{"t": "0", "e": "1"},
 			expected: false,
 		},
 		{
-			// Matches both source and target filters of rule1,
-			// inhibited because sourceAlert1 matches only the
-			// source filter of rule1.
-			target:   model.LabelSet{"s1": "1", "t1": "1", "e": "1"},
-			expected: true,
-		},
-		{
-			// Matches both source and target filters of rule2,
-			// not inhibited because sourceAlert2 matches also both the
-			// source and target filter of rule2.
-			target:   model.LabelSet{"s2": "1", "t2": "1", "e": "1"},
+			// Matches both source and target filters, not inhibited
+			target:   model.LabelSet{"s": "1", "t": "1", "e": "1"},
 			expected: false,
 		},
 		{
 			// Matches target filter, equal label doesn't match, not inhibited
-			target:   model.LabelSet{"t1": "1", "e": "0"},
+			target:   model.LabelSet{"t": "1", "e": "0"},
 			expected: false,
 		},
 	}
@@ -353,7 +320,7 @@ func TestInhibit(t *testing.T) {
 		},
 	} {
 		ap := newFakeAlerts(tc.alerts)
-		mk := types.NewMarker(prometheus.NewRegistry())
+		mk := types.NewMarker()
 		inhibitor := NewInhibitor(ap, []*config.InhibitRule{inhibitRule()}, mk, nopLogger)
 
 		go func() {

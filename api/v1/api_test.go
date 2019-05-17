@@ -51,7 +51,7 @@ func newFakeAlerts(alerts []*types.Alert, withErr bool) *fakeAlerts {
 		fps:    fps,
 	}
 	if withErr {
-		f.err = errors.New("error occurred")
+		f.err = errors.New("Error occured")
 	}
 	return f
 }
@@ -132,13 +132,7 @@ func TestAddAlerts(t *testing.T) {
 		}
 
 		alertsProvider := newFakeAlerts([]*types.Alert{}, tc.err)
-		api := New(alertsProvider, nil, newGetAlertStatus(alertsProvider), nil, nil, nil)
-		defaultGlobalConfig := config.DefaultGlobalConfig()
-		route := config.Route{}
-		api.Update(&config.Config{
-			Global: &defaultGlobalConfig,
-			Route:  &route,
-		})
+		api := New(alertsProvider, nil, newGetAlertStatus(alertsProvider), nil, nil)
 
 		r, err := http.NewRequest("POST", "/api/v1/alerts", bytes.NewReader(b))
 		w := httptest.NewRecorder()
@@ -265,7 +259,7 @@ func TestListAlerts(t *testing.T) {
 		},
 	} {
 		alertsProvider := newFakeAlerts(alerts, tc.err)
-		api := New(alertsProvider, nil, newGetAlertStatus(alertsProvider), nil, nil, nil)
+		api := New(alertsProvider, nil, newGetAlertStatus(alertsProvider), nil, nil)
 		api.route = dispatch.NewRoute(&config.Route{Receiver: "def-receiver"}, nil)
 
 		r, err := http.NewRequest("GET", "/api/v1/alerts", nil)

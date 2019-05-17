@@ -78,7 +78,6 @@ const (
 	TypeCDS        uint16 = 59
 	TypeCDNSKEY    uint16 = 60
 	TypeOPENPGPKEY uint16 = 61
-	TypeCSYNC      uint16 = 62
 	TypeSPF        uint16 = 99
 	TypeUINFO      uint16 = 100
 	TypeUID        uint16 = 101
@@ -330,7 +329,7 @@ func (rr *MX) String() string {
 type AFSDB struct {
 	Hdr      RR_Header
 	Subtype  uint16
-	Hostname string `dns:"domain-name"`
+	Hostname string `dns:"cdomain-name"`
 }
 
 func (rr *AFSDB) String() string {
@@ -419,130 +418,128 @@ type TXT struct {
 func (rr *TXT) String() string { return rr.Hdr.String() + sprintTxt(rr.Txt) }
 
 func sprintName(s string) string {
-	var dst strings.Builder
-	dst.Grow(len(s))
-	for i := 0; i < len(s); {
-		if i+1 < len(s) && s[i] == '\\' && s[i+1] == '.' {
-			dst.WriteString(s[i : i+2])
+	src := []byte(s)
+	dst := make([]byte, 0, len(src))
+	for i := 0; i < len(src); {
+		if i+1 < len(src) && src[i] == '\\' && src[i+1] == '.' {
+			dst = append(dst, src[i:i+2]...)
 			i += 2
-			continue
+		} else {
+			b, n := nextByte(src, i)
+			if n == 0 {
+				i++ // dangling back slash
+			} else if b == '.' {
+				dst = append(dst, b)
+			} else {
+				dst = appendDomainNameByte(dst, b)
+			}
+			i += n
 		}
-
-		b, n := nextByte(s, i)
-		switch {
-		case n == 0:
-			i++ // dangling back slash
-		case b == '.':
-			dst.WriteByte('.')
-		default:
-			writeDomainNameByte(&dst, b)
-		}
-		i += n
 	}
-	return dst.String()
+	return string(dst)
 }
 
 func sprintTxtOctet(s string) string {
-	var dst strings.Builder
-	dst.Grow(2 + len(s))
-	dst.WriteByte('"')
-	for i := 0; i < len(s); {
-		if i+1 < len(s) && s[i] == '\\' && s[i+1] == '.' {
-			dst.WriteString(s[i : i+2])
+	src := []byte(s)
+	dst := make([]byte, 0, len(src))
+	dst = append(dst, '"')
+	for i := 0; i < len(src); {
+		if i+1 < len(src) && src[i] == '\\' && src[i+1] == '.' {
+			dst = append(dst, src[i:i+2]...)
 			i += 2
-			continue
+		} else {
+			b, n := nextByte(src, i)
+			if n == 0 {
+				i++ // dangling back slash
+			} else if b == '.' {
+				dst = append(dst, b)
+			} else {
+				if b < ' ' || b > '~' {
+					dst = appendByte(dst, b)
+				} else {
+					dst = append(dst, b)
+				}
+			}
+			i += n
 		}
-
-		b, n := nextByte(s, i)
-		switch {
-		case n == 0:
-			i++ // dangling back slash
-		case b == '.':
-			dst.WriteByte('.')
-		case b < ' ' || b > '~':
-			writeEscapedByte(&dst, b)
-		default:
-			dst.WriteByte(b)
-		}
-		i += n
 	}
-	dst.WriteByte('"')
-	return dst.String()
+	dst = append(dst, '"')
+	return string(dst)
 }
 
 func sprintTxt(txt []string) string {
-	var out strings.Builder
+	var out []byte
 	for i, s := range txt {
-		out.Grow(3 + len(s))
 		if i > 0 {
-			out.WriteString(` "`)
+			out = append(out, ` "`...)
 		} else {
-			out.WriteByte('"')
+			out = append(out, '"')
 		}
-		for j := 0; j < len(s); {
-			b, n := nextByte(s, j)
+		bs := []byte(s)
+		for j := 0; j < len(bs); {
+			b, n := nextByte(bs, j)
 			if n == 0 {
 				break
 			}
-			writeTXTStringByte(&out, b)
+			out = appendTXTStringByte(out, b)
 			j += n
 		}
-		out.WriteByte('"')
+		out = append(out, '"')
 	}
-	return out.String()
+	return string(out)
 }
 
-func writeDomainNameByte(s *strings.Builder, b byte) {
+func appendDomainNameByte(s []byte, b byte) []byte {
 	switch b {
 	case '.', ' ', '\'', '@', ';', '(', ')': // additional chars to escape
-		s.WriteByte('\\')
-		s.WriteByte(b)
-	default:
-		writeTXTStringByte(s, b)
+		return append(s, '\\', b)
 	}
+	return appendTXTStringByte(s, b)
 }
 
-func writeTXTStringByte(s *strings.Builder, b byte) {
-	switch {
-	case b == '"' || b == '\\':
-		s.WriteByte('\\')
-		s.WriteByte(b)
-	case b < ' ' || b > '~':
-		writeEscapedByte(s, b)
-	default:
-		s.WriteByte(b)
+func appendTXTStringByte(s []byte, b byte) []byte {
+	switch b {
+	case '"', '\\':
+		return append(s, '\\', b)
 	}
+	if b < ' ' || b > '~' {
+		return appendByte(s, b)
+	}
+	return append(s, b)
 }
 
-func writeEscapedByte(s *strings.Builder, b byte) {
+func appendByte(s []byte, b byte) []byte {
 	var buf [3]byte
 	bufs := strconv.AppendInt(buf[:0], int64(b), 10)
-	s.WriteByte('\\')
-	for i := len(bufs); i < 3; i++ {
-		s.WriteByte('0')
+	s = append(s, '\\')
+	for i := 0; i < 3-len(bufs); i++ {
+		s = append(s, '0')
 	}
-	s.Write(bufs)
+	for _, r := range bufs {
+		s = append(s, r)
+	}
+	return s
 }
 
-func nextByte(s string, offset int) (byte, int) {
-	if offset >= len(s) {
+func nextByte(b []byte, offset int) (byte, int) {
+	if offset >= len(b) {
 		return 0, 0
 	}
-	if s[offset] != '\\' {
+	if b[offset] != '\\' {
 		// not an escape sequence
-		return s[offset], 1
+		return b[offset], 1
 	}
-	switch len(s) - offset {
+	switch len(b) - offset {
 	case 1: // dangling escape
 		return 0, 0
 	case 2, 3: // too short to be \ddd
 	default: // maybe \ddd
-		if isDigit(s[offset+1]) && isDigit(s[offset+2]) && isDigit(s[offset+3]) {
-			return dddStringToByte(s[offset+1:]), 4
+		if isDigit(b[offset+1]) && isDigit(b[offset+2]) && isDigit(b[offset+3]) {
+			return dddToByte(b[offset+1:]), 4
 		}
 	}
 	// not \ddd, just an RFC 1035 "quoted" character
-	return s[offset+1], 2
+	return b[offset+1], 2
 }
 
 // SPF RR. See RFC 4408, Section 3.1.1.
@@ -730,7 +727,7 @@ func (rr *LOC) String() string {
 	lat = lat % LOC_DEGREES
 	m := lat / LOC_HOURS
 	lat = lat % LOC_HOURS
-	s += fmt.Sprintf("%02d %02d %0.3f %s ", h, m, float64(lat)/1000, ns)
+	s += fmt.Sprintf("%02d %02d %0.3f %s ", h, m, (float64(lat) / 1000), ns)
 
 	lon := rr.Longitude
 	ew := "E"
@@ -744,7 +741,7 @@ func (rr *LOC) String() string {
 	lon = lon % LOC_DEGREES
 	m = lon / LOC_HOURS
 	lon = lon % LOC_HOURS
-	s += fmt.Sprintf("%02d %02d %0.3f %s ", h, m, float64(lon)/1000, ew)
+	s += fmt.Sprintf("%02d %02d %0.3f %s ", h, m, (float64(lon) / 1000), ew)
 
 	var alt = float64(rr.Altitude) / 100
 	alt -= LOC_ALTITUDEBASE
@@ -754,9 +751,9 @@ func (rr *LOC) String() string {
 		s += fmt.Sprintf("%.0fm ", alt)
 	}
 
-	s += cmToM(rr.Size&0xf0>>4, rr.Size&0x0f) + "m "
-	s += cmToM(rr.HorizPre&0xf0>>4, rr.HorizPre&0x0f) + "m "
-	s += cmToM(rr.VertPre&0xf0>>4, rr.VertPre&0x0f) + "m"
+	s += cmToM((rr.Size&0xf0)>>4, rr.Size&0x0f) + "m "
+	s += cmToM((rr.HorizPre&0xf0)>>4, rr.HorizPre&0x0f) + "m "
+	s += cmToM((rr.VertPre&0xf0)>>4, rr.VertPre&0x0f) + "m"
 
 	return s
 }
@@ -1015,18 +1012,14 @@ type TKEY struct {
 	Mode       uint16
 	Error      uint16
 	KeySize    uint16
-	Key        string `dns:"size-hex:KeySize"`
+	Key        string
 	OtherLen   uint16
-	OtherData  string `dns:"size-hex:OtherLen"`
+	OtherData  string
 }
 
-// TKEY has no official presentation format, but this will suffice.
 func (rr *TKEY) String() string {
-	s := "\n;; TKEY PSEUDOSECTION:\n"
-	s += rr.Hdr.String() + " " + rr.Algorithm + " " +
-		strconv.Itoa(int(rr.KeySize)) + " " + rr.Key + " " +
-		strconv.Itoa(int(rr.OtherLen)) + " " + rr.OtherData
-	return s
+	// It has no presentation format
+	return ""
 }
 
 // RFC3597 represents an unknown/generic RR. See RFC 3597.
@@ -1274,45 +1267,15 @@ type OPENPGPKEY struct {
 
 func (rr *OPENPGPKEY) String() string { return rr.Hdr.String() + rr.PublicKey }
 
-// CSYNC RR. See RFC 7477.
-type CSYNC struct {
-	Hdr        RR_Header
-	Serial     uint32
-	Flags      uint16
-	TypeBitMap []uint16 `dns:"nsec"`
-}
-
-func (rr *CSYNC) String() string {
-	s := rr.Hdr.String() + strconv.FormatInt(int64(rr.Serial), 10) + " " + strconv.Itoa(int(rr.Flags))
-
-	for i := 0; i < len(rr.TypeBitMap); i++ {
-		s += " " + Type(rr.TypeBitMap[i]).String()
-	}
-	return s
-}
-
-func (rr *CSYNC) len() int {
-	l := rr.Hdr.len() + 4 + 2
-	lastwindow := uint32(2 ^ 32 + 1)
-	for _, t := range rr.TypeBitMap {
-		window := t / 256
-		if uint32(window) != lastwindow {
-			l += 1 + 32
-		}
-		lastwindow = uint32(window)
-	}
-	return l
-}
-
 // TimeToString translates the RRSIG's incep. and expir. times to the
 // string representation used when printing the record.
 // It takes serial arithmetic (RFC 1982) into account.
 func TimeToString(t uint32) string {
-	mod := (int64(t)-time.Now().Unix())/year68 - 1
+	mod := ((int64(t) - time.Now().Unix()) / year68) - 1
 	if mod < 0 {
 		mod = 0
 	}
-	ti := time.Unix(int64(t)-mod*year68, 0).UTC()
+	ti := time.Unix(int64(t)-(mod*year68), 0).UTC()
 	return ti.Format("20060102150405")
 }
 
@@ -1324,11 +1287,11 @@ func StringToTime(s string) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	mod := t.Unix()/year68 - 1
+	mod := (t.Unix() / year68) - 1
 	if mod < 0 {
 		mod = 0
 	}
-	return uint32(t.Unix() - mod*year68), nil
+	return uint32(t.Unix() - (mod * year68)), nil
 }
 
 // saltToString converts a NSECX salt to uppercase and returns "-" when it is empty.

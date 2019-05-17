@@ -91,9 +91,7 @@ var LabelNameHZ = regexp.MustCompile(`[\p{Han}]+`)
 // therewith.
 type LabelName string
 
-// IsValid is true iff the label name matches the pattern of LabelNameRE. This
-// method, however, does not use LabelNameRE for the check but a much faster
-// hardcoded implementation.
+// IsValid is true if the label name is string
 func (ln LabelName) IsValid() bool {
 	if len(ln) == 0 {
 		return false
@@ -104,6 +102,7 @@ func (ln LabelName) IsValid() bool {
 		}
 	}
 	return true
+
 }
 
 // UnmarshalYAML implements the yaml.Unmarshaler interface.

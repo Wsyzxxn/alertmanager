@@ -17,12 +17,20 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
+	"net"
 	"net/http"
+	"net/mail"
+	"net/smtp"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"time"
@@ -189,16 +197,290 @@ func (w *Webhook) retry(statusCode int) (bool, error) {
 	return false, nil
 }
 
+// Email implements a Notifier for email notifications.
+type Email struct {
+	conf   *config.EmailConfig
+	tmpl   *template.Template
+	logger log.Logger
+}
+
+// NewEmail returns a new Email notifier.
+func NewEmail(c *config.EmailConfig, t *template.Template, l log.Logger) *Email {
+	if _, ok := c.Headers["Subject"]; !ok {
+		c.Headers["Subject"] = config.DefaultEmailSubject
+	}
+	if _, ok := c.Headers["To"]; !ok {
+		c.Headers["To"] = c.To
+	}
+	if _, ok := c.Headers["From"]; !ok {
+		c.Headers["From"] = c.From
+	}
+	return &Email{conf: c, tmpl: t, logger: l}
+}
+
+// auth resolves a string of authentication mechanisms.
+func (n *Email) auth(mechs string) (smtp.Auth, error) {
+	username := n.conf.AuthUsername
+
+	// If no username is set, keep going without authentication.
+	if n.conf.AuthUsername == "" {
+		level.Debug(n.logger).Log("msg", "smtp_auth_username is not configured. Attempting to send email without authenticating")
+		return nil, nil
+	}
+
+	err := &types.MultiError{}
+	for _, mech := range strings.Split(mechs, " ") {
+		switch mech {
+		case "CRAM-MD5":
+			secret := string(n.conf.AuthSecret)
+			if secret == "" {
+				err.Add(errors.New("missing secret for CRAM-MD5 auth mechanism"))
+				continue
+			}
+			return smtp.CRAMMD5Auth(username, secret), nil
+
+		case "PLAIN":
+			password := string(n.conf.AuthPassword)
+			if password == "" {
+				err.Add(errors.New("missing password for PLAIN auth mechanism"))
+				continue
+			}
+			identity := n.conf.AuthIdentity
+
+			// We need to know the hostname for both auth and TLS.
+			host, _, err := net.SplitHostPort(n.conf.Smarthost)
+			if err != nil {
+				return nil, fmt.Errorf("invalid address: %s", err)
+			}
+			return smtp.PlainAuth(identity, username, password, host), nil
+		case "LOGIN":
+			password := string(n.conf.AuthPassword)
+			if password == "" {
+				err.Add(errors.New("missing password for LOGIN auth mechanism"))
+				continue
+			}
+			return LoginAuth(username, password), nil
+		}
+	}
+	if err.Len() == 0 {
+		err.Add(errors.New("unknown auth mechanism: " + mechs))
+	}
+	return nil, err
+}
+
+// Notify implements the Notifier interface.
+func (n *Email) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
+	// We need to know the hostname for both auth and TLS.
+	var c *smtp.Client
+	host, port, err := net.SplitHostPort(n.conf.Smarthost)
+	if err != nil {
+		return false, fmt.Errorf("invalid address: %s", err)
+	}
+
+	if port == "465" {
+		tlsConfig, err := commoncfg.NewTLSConfig(&n.conf.TLSConfig)
+		if err != nil {
+			return false, err
+		}
+		if tlsConfig.ServerName == "" {
+			tlsConfig.ServerName = host
+		}
+
+		conn, err := tls.Dial("tcp", n.conf.Smarthost, tlsConfig)
+		if err != nil {
+			return true, err
+		}
+		c, err = smtp.NewClient(conn, host)
+		if err != nil {
+			return true, err
+		}
+
+	} else {
+		// Connect to the SMTP smarthost.
+		c, err = smtp.Dial(n.conf.Smarthost)
+		if err != nil {
+			return true, err
+		}
+	}
+	defer func() {
+		if err := c.Quit(); err != nil {
+			level.Error(n.logger).Log("msg", "failed to close SMTP connection", "err", err)
+		}
+	}()
+
+	if n.conf.Hello != "" {
+		err := c.Hello(n.conf.Hello)
+		if err != nil {
+			return true, err
+		}
+	}
+
+	// Global Config guarantees RequireTLS is not nil
+	if *n.conf.RequireTLS {
+		if ok, _ := c.Extension("STARTTLS"); !ok {
+			return true, fmt.Errorf("require_tls: true (default), but %q does not advertise the STARTTLS extension", n.conf.Smarthost)
+		}
+
+		tlsConf, err := commoncfg.NewTLSConfig(&n.conf.TLSConfig)
+		if err != nil {
+			return false, err
+		}
+		if tlsConf.ServerName == "" {
+			tlsConf.ServerName = host
+		}
+
+		if err := c.StartTLS(tlsConf); err != nil {
+			return true, fmt.Errorf("starttls failed: %s", err)
+		}
+	}
+
+	if ok, mech := c.Extension("AUTH"); ok {
+		auth, err := n.auth(mech)
+		if err != nil {
+			return true, err
+		}
+		if auth != nil {
+			if err := c.Auth(auth); err != nil {
+				return true, fmt.Errorf("%T failed: %s", auth, err)
+			}
+		}
+	}
+
+	var (
+		tmplErr error
+		data    = n.tmpl.Data(receiverName(ctx, n.logger), groupLabels(ctx, n.logger), as...)
+		tmpl    = tmplText(n.tmpl, data, &tmplErr)
+		from    = tmpl(n.conf.From)
+		to      = tmpl(n.conf.To)
+	)
+	if tmplErr != nil {
+		return false, fmt.Errorf("failed to template 'from' or 'to': %v", tmplErr)
+	}
+
+	addrs, err := mail.ParseAddressList(from)
+	if err != nil {
+		return false, fmt.Errorf("parsing from addresses: %s", err)
+	}
+	if len(addrs) != 1 {
+		return false, fmt.Errorf("must be exactly one from address")
+	}
+	if err := c.Mail(addrs[0].Address); err != nil {
+		return true, fmt.Errorf("sending mail from: %s", err)
+	}
+	addrs, err = mail.ParseAddressList(to)
+	if err != nil {
+		return false, fmt.Errorf("parsing to addresses: %s", err)
+	}
+	for _, addr := range addrs {
+		if err := c.Rcpt(addr.Address); err != nil {
+			return true, fmt.Errorf("sending rcpt to: %s", err)
+		}
+	}
+
+	// Send the email body.
+	wc, err := c.Data()
+	if err != nil {
+		return true, err
+	}
+	defer wc.Close()
+
+	for header, t := range n.conf.Headers {
+		value, err := n.tmpl.ExecuteTextString(t, data)
+		if err != nil {
+			return false, fmt.Errorf("executing %q header template: %s", header, err)
+		}
+		fmt.Fprintf(wc, "%s: %s\r\n", header, mime.QEncoding.Encode("utf-8", value))
+	}
+
+	buffer := &bytes.Buffer{}
+	multipartWriter := multipart.NewWriter(buffer)
+
+	fmt.Fprintf(wc, "Date: %s\r\n", time.Now().Format(time.RFC1123Z))
+	fmt.Fprintf(wc, "Content-Type: multipart/alternative;  boundary=%s\r\n", multipartWriter.Boundary())
+	fmt.Fprintf(wc, "MIME-Version: 1.0\r\n")
+
+	// TODO: Add some useful headers here, such as URL of the alertmanager
+	// and active/resolved.
+	fmt.Fprintf(wc, "\r\n")
+
+	if len(n.conf.Text) > 0 {
+		// Text template
+		w, err := multipartWriter.CreatePart(textproto.MIMEHeader{
+			"Content-Transfer-Encoding": {"quoted-printable"},
+			"Content-Type":              {"text/plain; charset=UTF-8"},
+		})
+		if err != nil {
+			return false, fmt.Errorf("creating part for text template: %s", err)
+		}
+		body, err := n.tmpl.ExecuteTextString(n.conf.Text, data)
+		if err != nil {
+			return false, fmt.Errorf("executing email text template: %s", err)
+		}
+		qw := quotedprintable.NewWriter(w)
+		_, err = qw.Write([]byte(body))
+		if err != nil {
+			return true, err
+		}
+		err = qw.Close()
+		if err != nil {
+			return true, err
+		}
+	}
+
+	if len(n.conf.HTML) > 0 {
+		// Html template
+		// Preferred alternative placed last per section 5.1.4 of RFC 2046
+		// https://www.ietf.org/rfc/rfc2046.txt
+		w, err := multipartWriter.CreatePart(textproto.MIMEHeader{
+			"Content-Transfer-Encoding": {"quoted-printable"},
+			"Content-Type":              {"text/html; charset=UTF-8"},
+		})
+		if err != nil {
+			return false, fmt.Errorf("creating part for html template: %s", err)
+		}
+		body, err := n.tmpl.ExecuteHTMLString(n.conf.HTML, data)
+		if err != nil {
+			return false, fmt.Errorf("executing email html template: %s", err)
+		}
+		qw := quotedprintable.NewWriter(w)
+		_, err = qw.Write([]byte(body))
+		if err != nil {
+			return true, err
+		}
+		err = qw.Close()
+		if err != nil {
+			return true, err
+		}
+	}
+
+	err = multipartWriter.Close()
+	if err != nil {
+		return false, fmt.Errorf("failed to close multipartWriter: %v", err)
+	}
+
+	_, err = wc.Write(buffer.Bytes())
+	if err != nil {
+		return false, fmt.Errorf("failed to write body buffer: %v", err)
+	}
+
+	return false, nil
+}
+
 // PagerDuty implements a Notifier for PagerDuty notifications.
 type PagerDuty struct {
 	conf   *config.PagerdutyConfig
 	tmpl   *template.Template
 	logger log.Logger
+	apiV1  string // for tests.
 }
 
 // NewPagerDuty returns a new PagerDuty notifier.
 func NewPagerDuty(c *config.PagerdutyConfig, t *template.Template, l log.Logger) *PagerDuty {
-	return &PagerDuty{conf: c, tmpl: t, logger: l}
+	n := &PagerDuty{conf: c, tmpl: t, logger: l}
+	if c.ServiceKey != "" {
+		n.apiV1 = "https://events.pagerduty.com/generic/2010-04-15/create_event.json"
+	}
+	return n
 }
 
 const (
@@ -263,12 +545,6 @@ func (n *PagerDuty) notifyV1(
 		Details:     details,
 	}
 
-	apiURL, err := url.Parse("https://events.pagerduty.com/generic/2010-04-15/create_event.json")
-	if err != nil {
-		return false, err
-	}
-	n.conf.URL = &config.URL{apiURL}
-
 	if eventType == pagerDutyEventTrigger {
 		msg.Client = tmpl(n.conf.Client)
 		msg.ClientURL = tmpl(n.conf.ClientURL)
@@ -283,7 +559,7 @@ func (n *PagerDuty) notifyV1(
 		return false, err
 	}
 
-	resp, err := post(ctx, c, n.conf.URL.String(), contentTypeJSON, &buf)
+	resp, err := post(ctx, c, n.apiV1, contentTypeJSON, &buf)
 	if err != nil {
 		return true, err
 	}
@@ -307,12 +583,6 @@ func (n *PagerDuty) notifyV2(
 		n.conf.Severity = "error"
 	}
 
-	summary := tmpl(n.conf.Description)
-	summaryRunes := []rune(summary)
-	if len(summaryRunes) > 1024 {
-		summary = string(summaryRunes[:1018]) + " [...]"
-	}
-
 	msg := &pagerDutyMessage{
 		Client:      tmpl(n.conf.Client),
 		ClientURL:   tmpl(n.conf.ClientURL),
@@ -322,7 +592,7 @@ func (n *PagerDuty) notifyV2(
 		Images:      make([]pagerDutyImage, len(n.conf.Images)),
 		Links:       make([]pagerDutyLink, len(n.conf.Links)),
 		Payload: &pagerDutyPayload{
-			Summary:       summary,
+			Summary:       tmpl(n.conf.Description),
 			Source:        tmpl(n.conf.Client),
 			Severity:      tmpl(n.conf.Severity),
 			CustomDetails: details,
@@ -349,23 +619,14 @@ func (n *PagerDuty) notifyV2(
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(msg); err != nil {
-		return false, fmt.Errorf("failed to encode PagerDuty v2 message: %v", err)
+		return false, err
 	}
 
 	resp, err := post(ctx, c, n.conf.URL.String(), contentTypeJSON, &buf)
 	if err != nil {
-		return true, fmt.Errorf("failed to post message to PagerDuty: %v", err)
+		return true, err
 	}
 	defer resp.Body.Close()
-
-	// See: https://v2.developer.pagerduty.com/docs/events-api-v2#api-response-codes--retry-logic
-	if resp.StatusCode == http.StatusBadRequest {
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return false, fmt.Errorf("failed to read error response from PagerDuty (status: %d): %v", resp.StatusCode, err)
-		}
-		level.Debug(n.logger).Log("msg", "Received error response from PagerDuty", "incident", key, "code", resp.StatusCode, "body", string(body))
-	}
 
 	return n.retryV2(resp.StatusCode)
 }
@@ -409,7 +670,7 @@ func (n *PagerDuty) Notify(ctx context.Context, as ...*types.Alert) (bool, error
 		return false, err
 	}
 
-	if n.conf.ServiceKey != "" {
+	if n.apiV1 != "" {
 		return n.notifyV1(ctx, c, eventType, key, data, details, as...)
 	}
 	return n.notifyV2(ctx, c, eventType, key, data, details, as...)
@@ -583,9 +844,10 @@ func (n *Slack) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
 		return false, err
 	}
 
-	resp, err := post(ctx, c, n.conf.APIURL.String(), contentTypeJSON, &buf)
+	u := n.conf.APIURL.String()
+	resp, err := post(ctx, c, u, contentTypeJSON, &buf)
 	if err != nil {
-		return true, err
+		return true, redactURL(err)
 	}
 	resp.Body.Close()
 
@@ -672,7 +934,7 @@ func (n *Hipchat) Notify(ctx context.Context, as ...*types.Alert) (bool, error) 
 
 	resp, err := post(ctx, c, apiURL.String(), contentTypeJSON, &buf)
 	if err != nil {
-		return true, err
+		return true, redactURL(err)
 	}
 
 	defer resp.Body.Close()
@@ -681,8 +943,8 @@ func (n *Hipchat) Notify(ctx context.Context, as ...*types.Alert) (bool, error) 
 }
 
 func (n *Hipchat) retry(statusCode int) (bool, error) {
-	// Response codes 429 (rate limiting) and 5xx can potentially recover.
-	// 2xx response codes indicate successful requests.
+	// Response codes 429 (rate limiting) and 5xx can potentially recover. 2xx
+	// responce codes indicate successful requests.
 	// https://developer.atlassian.com/hipchat/guide/hipchat-rest-api/api-response-codes
 	if statusCode/100 != 2 {
 		return (statusCode == 429 || statusCode/100 == 5), fmt.Errorf("unexpected status code %v", statusCode)
@@ -773,7 +1035,7 @@ func (n *Wechat) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
 
 		resp, err := c.Do(req.WithContext(ctx))
 		if err != nil {
-			return true, err
+			return true, redactURL(err)
 		}
 		defer resp.Body.Close()
 
@@ -824,7 +1086,7 @@ func (n *Wechat) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
 
 	resp, err := c.Do(req.WithContext(ctx))
 	if err != nil {
-		return true, err
+		return true, redactURL(err)
 	}
 	defer resp.Body.Close()
 
@@ -951,9 +1213,10 @@ func (n *OpsGenie) createRequest(ctx context.Context, as ...*types.Alert) (*http
 		apiURL.RawQuery = q.Encode()
 		msg = &opsGenieCloseMessage{Source: tmpl(n.conf.Source)}
 	default:
-		message, truncated := truncate(tmpl(n.conf.Message), 130)
-		if truncated {
-			level.Debug(n.logger).Log("msg", "truncated message due to OpsGenie message limit", "truncated_message", message, "incident", key)
+		message := tmpl(n.conf.Message)
+		if len(message) > 130 {
+			message = message[:127] + "..."
+			level.Debug(n.logger).Log("msg", "Truncated message to %q due to OpsGenie message limit", "truncated_message", message, "incident", key)
 		}
 
 		apiURL.Path += "v2/alerts"
@@ -1052,7 +1315,7 @@ func (n *VictorOps) Notify(ctx context.Context, as ...*types.Alert) (bool, error
 
 	resp, err := post(ctx, c, apiURL.String(), contentTypeJSON, buf)
 	if err != nil {
-		return true, err
+		return true, redactURL(err)
 	}
 
 	defer resp.Body.Close()
@@ -1091,9 +1354,9 @@ func (n *VictorOps) createVictorOpsPayload(ctx context.Context, as ...*types.Ale
 		messageType = victorOpsEventResolve
 	}
 
-	stateMessage, truncated := truncate(stateMessage, 20480)
-	if truncated {
-		level.Debug(n.logger).Log("msg", "truncated stateMessage due to VictorOps stateMessage limit", "truncated_state_message", stateMessage, "incident", key)
+	if len(stateMessage) > 20480 {
+		stateMessage = stateMessage[0:20475] + "\n..."
+		level.Debug(n.logger).Log("msg", "Truncated stateMessage due to VictorOps stateMessage limit", "truncated_state_message", stateMessage, "incident", key)
 	}
 
 	msg := map[string]string{
@@ -1140,11 +1403,12 @@ type Pushover struct {
 	conf   *config.PushoverConfig
 	tmpl   *template.Template
 	logger log.Logger
+	apiURL string // for tests.
 }
 
 // NewPushover returns a new Pushover notifier.
 func NewPushover(c *config.PushoverConfig, t *template.Template, l log.Logger) *Pushover {
-	return &Pushover{conf: c, tmpl: t, logger: l}
+	return &Pushover{conf: c, tmpl: t, logger: l, apiURL: "https://api.pushover.net/1/messages.json"}
 }
 
 // Notify implements the Notifier interface.
@@ -1168,8 +1432,9 @@ func (n *Pushover) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	parameters.Add("token", tmpl(string(n.conf.Token)))
 	parameters.Add("user", tmpl(string(n.conf.UserKey)))
 
-	title, truncated := truncate(tmpl(n.conf.Title), 250)
-	if truncated {
+	title := tmpl(n.conf.Title)
+	if len(title) > 250 {
+		title = title[:247] + "..."
 		level.Debug(n.logger).Log("msg", "Truncated title due to Pushover title limit", "truncated_title", title, "incident", key)
 	}
 	parameters.Add("title", title)
@@ -1181,8 +1446,8 @@ func (n *Pushover) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		message = tmpl(n.conf.Message)
 	}
 
-	message, truncated = truncate(message, 1024)
-	if truncated {
+	if len(message) > 1024 {
+		message = message[:1021] + "..."
 		level.Debug(n.logger).Log("msg", "Truncated message due to Pushover message limit", "truncated_message", message, "incident", key)
 	}
 	message = strings.TrimSpace(message)
@@ -1192,8 +1457,9 @@ func (n *Pushover) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	}
 	parameters.Add("message", message)
 
-	supplementaryURL, truncated := truncate(tmpl(n.conf.URL), 512)
-	if truncated {
+	supplementaryURL := tmpl(n.conf.URL)
+	if len(supplementaryURL) > 512 {
+		supplementaryURL = supplementaryURL[:509] + "..."
 		level.Debug(n.logger).Log("msg", "Truncated URL due to Pushover url limit", "truncated_url", supplementaryURL, "incident", key)
 	}
 	parameters.Add("url", supplementaryURL)
@@ -1207,13 +1473,13 @@ func (n *Pushover) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		return false, err
 	}
 
-	apiURL := "https://api.pushover.net/1/messages.json"
-	u, err := url.Parse(apiURL)
+	u, err := url.Parse(n.apiURL)
 	if err != nil {
 		return false, err
 	}
 	u.RawQuery = parameters.Encode()
-	level.Debug(n.logger).Log("msg", "Sending Pushover message", "incident", key, "url", u.String())
+	// Don't log the URL as it contains secret data (see #1825).
+	level.Debug(n.logger).Log("msg", "Sending Pushover message", "incident", key)
 
 	c, err := commoncfg.NewClientFromConfig(*n.conf.HTTPConfig, "pushover")
 	if err != nil {
@@ -1222,7 +1488,7 @@ func (n *Pushover) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 
 	resp, err := post(ctx, c, u.String(), "text/plain", nil)
 	if err != nil {
-		return true, err
+		return true, redactURL(err)
 	}
 	defer resp.Body.Close()
 
@@ -1266,12 +1532,49 @@ func tmplHTML(tmpl *template.Template, data *template.Data, err *error) func(str
 	}
 }
 
+type loginAuth struct {
+	username, password string
+}
+
+func LoginAuth(username, password string) smtp.Auth {
+	return &loginAuth{username, password}
+}
+
+func (a *loginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+	return "LOGIN", []byte{}, nil
+}
+
+// Used for AUTH LOGIN. (Maybe password should be encrypted)
+func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	if more {
+		switch strings.ToLower(string(fromServer)) {
+		case "username:":
+			return []byte(a.username), nil
+		case "password:":
+			return []byte(a.password), nil
+		default:
+			return nil, errors.New("unexpected server challenge")
+		}
+	}
+	return nil, nil
+}
+
 // hashKey returns the sha256 for a group key as integrations may have
 // maximum length requirements on deduplication keys.
 func hashKey(s string) string {
 	h := sha256.New()
 	h.Write([]byte(s))
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// redactURL removes the URL part from an error of *url.Error type.
+func redactURL(err error) error {
+	e, ok := err.(*url.Error)
+	if !ok {
+		return err
+	}
+	e.URL = "<redacted>"
+	return e
 }
 
 func post(ctx context.Context, client *http.Client, url string, bodyType string, body io.Reader) (*http.Response, error) {
@@ -1281,15 +1584,4 @@ func post(ctx context.Context, client *http.Client, url string, bodyType string,
 	}
 	req.Header.Set("Content-Type", bodyType)
 	return client.Do(req.WithContext(ctx))
-}
-
-func truncate(s string, n int) (string, bool) {
-	r := []rune(s)
-	if len(r) <= n {
-		return s, false
-	}
-	if n <= 3 {
-		return string(r[:n]), true
-	}
-	return string(r[:n-3]) + "...", true
 }

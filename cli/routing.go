@@ -62,8 +62,7 @@ func configureRoutingCmd(app *kingpin.CmdClause) {
 
 func (c *routingShow) routingShowAction(ctx context.Context, _ *kingpin.ParseContext) error {
 	// Load configuration form file or URL.
-	//cfg, err := loadAlertmanagerConfig(ctx, alertmanagerURL, c.configFile)
-	cfg, err := loadAlertmanagerConfig(ctx, alertmanagerURL, c.configFile )
+	cfg, err := loadAlertmanagerConfig(ctx, alertmanagerURL, c.configFile)
 	if err != nil {
 		kingpin.Fatalf("%s", err)
 		return err

@@ -1,6 +1,11 @@
-## Next release
+## 0.16.2 / 2019-04-03
 
-* [CHANGE] Make api/v2/status.cluster.{name,peers} properties optional for Alertmanager with disabled clustering (#1728)
+Updating to v0.16.2 is recommended for all users using the Slack, Pagerduty,
+Hipchat, Wechat, VictorOps and Pushover notifier, as connection errors could
+leak secrets embedded in the notifier's URL to stdout.
+
+* [BUGFIX] Redact notifier URL from logs to not leak secrets embedded in the URL (#1822, #1825)
+* [BUGFIX] Allow sending of unauthenticated SMTP requests when `smtp_auth_username` is not supplied (#1739)
 
 ## 0.16.1 / 2019-01-31
 
@@ -26,7 +31,7 @@ deprecated. API v1 will be removed with Alertmanager release v0.18.0.
 * [FEATURE] Add support for images and links in the PagerDuty notification config (#1559)
 * [FEATURE] Add support for grouping by all labels (#1588)
 * [FEATURE] [amtool] Add timeout support to amtool commands (#1471)
-* [FEATURE] [amtool] Added `config routes` tools for visualization and testing routes (#1511)
+* [FEATURE] [amtool] Added `config routes` tools for vizualization and testing routes (#1511)
 * [FEATURE] [amtool] Support adding alerts using amtool (#1461)
 * [ENHANCEMENT] Add support for --log.format (#1658)
 * [ENHANCEMENT] Add CORS support to API v2 (#1667)
@@ -349,7 +354,7 @@ This release uses a new storage backend based on BoltDB. You have to backup
 and wipe your former storage path to run it.
 
 * [CHANGE] Use BoltDB as data store.
-* [CHANGE] Move SMTP authentication to configuration file
+* [CHANGE] Move SMTP authentification to configuration file
 * [FEATURE] add /-/reload HTTP endpoint
 * [FEATURE] Filter silenced alerts in web UI
 * [ENHANCEMENT] reduce inhibition computation complexity

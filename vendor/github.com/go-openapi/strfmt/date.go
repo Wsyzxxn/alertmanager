@@ -20,7 +20,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/globalsign/mgo/bson"
+	"gopkg.in/mgo.v2/bson"
+
 	"github.com/mailru/easyjson/jlexer"
 	"github.com/mailru/easyjson/jwriter"
 )

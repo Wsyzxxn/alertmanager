@@ -78,7 +78,7 @@ func (c *routingShow) routingTestAction(ctx context.Context, _ *kingpin.ParseCon
 
 	mainRoute := dispatch.NewRoute(cfg.Route, nil)
 
-	// Parse labels to LabelSet.
+	// Parse lables to LabelSet.
 	ls, err := parseLabels(c.labels)
 	if err != nil {
 		kingpin.Fatalf("Failed to parse labels: %v\n", err)

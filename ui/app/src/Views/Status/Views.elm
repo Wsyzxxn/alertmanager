@@ -61,15 +61,10 @@ viewClusterStatus : ClusterStatus -> Html Types.Msg
 viewClusterStatus { name, status, peers } =
     span []
         [ h2 [] [ text "Cluster Status" ]
-        , case name of
-            Just n ->
-                div [ class "form-group row" ]
-                    [ b [ class "col-sm-2" ] [ text "Name:" ]
-                    , div [ class "col-sm-10" ] [ text n ]
-                    ]
-
-            Nothing ->
-                text ""
+        , div [ class "form-group row" ]
+            [ b [ class "col-sm-2" ] [ text "Name:" ]
+            , div [ class "col-sm-10" ] [ text name ]
+            ]
         , div [ class "form-group row" ]
             [ b [ class "col-sm-2" ] [ text "Status:" ]
             , div [ class "col-sm-10" ]
@@ -90,16 +85,11 @@ viewClusterStatus { name, status, peers } =
                     [ text <| clusterStatusToString status ]
                 ]
             ]
-        , case peers of
-            Just p ->
-                div [ class "form-group row" ]
-                    [ b [ class "col-sm-2" ] [ text "Peers:" ]
-                    , ul [ class "col-sm-10" ] <|
-                        List.map viewClusterPeer p
-                    ]
-
-            Nothing ->
-                text ""
+        , div [ class "form-group row" ]
+            [ b [ class "col-sm-2" ] [ text "Peers:" ]
+            , ul [ class "col-sm-10" ] <|
+                List.map viewClusterPeer peers
+            ]
         ]
 
 

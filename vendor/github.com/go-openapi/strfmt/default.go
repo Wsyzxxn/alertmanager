@@ -19,14 +19,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/mail"
 	"regexp"
 	"strings"
 
 	"github.com/asaskevich/govalidator"
-	"github.com/globalsign/mgo/bson"
 	"github.com/mailru/easyjson/jlexer"
 	"github.com/mailru/easyjson/jwriter"
+
+	"gopkg.in/mgo.v2/bson"
 )
 
 const (
@@ -112,12 +112,6 @@ func IsUUID5(str string) bool {
 	return rxUUID5.MatchString(str)
 }
 
-// Validates an email address.
-func IsEmail(str string) bool {
-	addr, e := mail.ParseAddress(str)
-	return e == nil && addr.Address != ""
-}
-
 func init() {
 	// register formats in the default registry:
 	//   - byte
@@ -143,7 +137,7 @@ func init() {
 	Default.Add("uri", &u, govalidator.IsRequestURI)
 
 	eml := Email("")
-	Default.Add("email", &eml, IsEmail)
+	Default.Add("email", &eml, govalidator.IsEmail)
 
 	hn := Hostname("")
 	Default.Add("hostname", &hn, IsHostname)

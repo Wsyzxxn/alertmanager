@@ -19,9 +19,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/globalsign/mgo/bson"
 	"github.com/mailru/easyjson/jlexer"
 	"github.com/mailru/easyjson/jwriter"
+
+	"gopkg.in/mgo.v2/bson"
 )
 
 func init() {
@@ -35,7 +36,7 @@ func IsBSONObjectID(str string) bool {
 	return bson.IsObjectIdHex(str)
 }
 
-// ObjectId represents a BSON object ID (alias to github.com/globalsign/mgo/bson.ObjectId)
+// ObjectId represents a BSON object ID (alias to gopkg.in/mgo.v2/bson.ObjectId)
 //
 // swagger:strfmt bsonobjectid
 type ObjectId bson.ObjectId

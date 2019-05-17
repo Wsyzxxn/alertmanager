@@ -24,12 +24,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-const (
-	// Maximum number of messages to be held in the queue.
-	maxQueueSize = 4096
-	fullState    = "full_state"
-	update       = "update"
-)
+// Maximum number of messages to be held in the queue.
+const maxQueueSize = 4096
 
 // delegate implements memberlist.Delegate and memberlist.EventDelegate
 // and broadcasts its peer's state in the cluster.
@@ -53,7 +49,7 @@ func newDelegate(l log.Logger, reg prometheus.Registerer, p *Peer, retransmit in
 	}
 	messagesReceived := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "alertmanager_cluster_messages_received_total",
-		Help: "Total number of cluster messages received.",
+		Help: "Total number of cluster messsages received.",
 	}, []string{"msg_type"})
 	messagesReceivedSize := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "alertmanager_cluster_messages_received_size_total",
@@ -61,7 +57,7 @@ func newDelegate(l log.Logger, reg prometheus.Registerer, p *Peer, retransmit in
 	}, []string{"msg_type"})
 	messagesSent := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "alertmanager_cluster_messages_sent_total",
-		Help: "Total number of cluster messages sent.",
+		Help: "Total number of cluster messsages sent.",
 	}, []string{"msg_type"})
 	messagesSentSize := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "alertmanager_cluster_messages_sent_size_total",
@@ -69,7 +65,7 @@ func newDelegate(l log.Logger, reg prometheus.Registerer, p *Peer, retransmit in
 	}, []string{"msg_type"})
 	messagesPruned := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "alertmanager_cluster_messages_pruned_total",
-		Help: "Total number of cluster messages pruned.",
+		Help: "Total number of cluster messsages pruned.",
 	})
 	gossipClusterMembers := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "alertmanager_cluster_members",
@@ -91,19 +87,19 @@ func newDelegate(l log.Logger, reg prometheus.Registerer, p *Peer, retransmit in
 	})
 	messagesQueued := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "alertmanager_cluster_messages_queued",
-		Help: "Number of cluster messages which are queued.",
+		Help: "Number of cluster messsages which are queued.",
 	}, func() float64 {
 		return float64(bcast.NumQueued())
 	})
 
-	messagesReceived.WithLabelValues(fullState)
-	messagesReceivedSize.WithLabelValues(fullState)
-	messagesReceived.WithLabelValues(update)
-	messagesReceivedSize.WithLabelValues(update)
-	messagesSent.WithLabelValues(fullState)
-	messagesSentSize.WithLabelValues(fullState)
-	messagesSent.WithLabelValues(update)
-	messagesSentSize.WithLabelValues(update)
+	messagesReceived.WithLabelValues("full_state")
+	messagesReceivedSize.WithLabelValues("full_state")
+	messagesReceived.WithLabelValues("update")
+	messagesReceivedSize.WithLabelValues("update")
+	messagesSent.WithLabelValues("full_state")
+	messagesSentSize.WithLabelValues("full_state")
+	messagesSent.WithLabelValues("update")
+	messagesSentSize.WithLabelValues("update")
 
 	reg.MustRegister(messagesReceived, messagesReceivedSize, messagesSent, messagesSentSize,
 		gossipClusterMembers, peerPosition, healthScore, messagesQueued, messagesPruned)
@@ -131,8 +127,8 @@ func (d *delegate) NodeMeta(limit int) []byte {
 
 // NotifyMsg is the callback invoked when a user-level gossip message is received.
 func (d *delegate) NotifyMsg(b []byte) {
-	d.messagesReceived.WithLabelValues(update).Inc()
-	d.messagesReceivedSize.WithLabelValues(update).Add(float64(len(b)))
+	d.messagesReceived.WithLabelValues("update").Inc()
+	d.messagesReceivedSize.WithLabelValues("update").Add(float64(len(b)))
 
 	var p clusterpb.Part
 	if err := proto.Unmarshal(b, &p); err != nil {
@@ -153,9 +149,9 @@ func (d *delegate) NotifyMsg(b []byte) {
 // GetBroadcasts is called when user data messages can be broadcasted.
 func (d *delegate) GetBroadcasts(overhead, limit int) [][]byte {
 	msgs := d.bcast.GetBroadcasts(overhead, limit)
-	d.messagesSent.WithLabelValues(update).Add(float64(len(msgs)))
+	d.messagesSent.WithLabelValues("update").Add(float64(len(msgs)))
 	for _, m := range msgs {
-		d.messagesSentSize.WithLabelValues(update).Add(float64(len(m)))
+		d.messagesSentSize.WithLabelValues("update").Add(float64(len(m)))
 	}
 	return msgs
 }
@@ -179,14 +175,14 @@ func (d *delegate) LocalState(_ bool) []byte {
 		level.Warn(d.logger).Log("msg", "encode local state", "err", err)
 		return nil
 	}
-	d.messagesSent.WithLabelValues(fullState).Inc()
-	d.messagesSentSize.WithLabelValues(fullState).Add(float64(len(b)))
+	d.messagesSent.WithLabelValues("full_state").Inc()
+	d.messagesSentSize.WithLabelValues("full_state").Add(float64(len(b)))
 	return b
 }
 
 func (d *delegate) MergeRemoteState(buf []byte, _ bool) {
-	d.messagesReceived.WithLabelValues(fullState).Inc()
-	d.messagesReceivedSize.WithLabelValues(fullState).Add(float64(len(buf)))
+	d.messagesReceived.WithLabelValues("full_state").Inc()
+	d.messagesReceivedSize.WithLabelValues("full_state").Add(float64(len(buf)))
 
 	var fs clusterpb.FullState
 	if err := proto.Unmarshal(buf, &fs); err != nil {

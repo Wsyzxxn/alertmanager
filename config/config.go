@@ -186,23 +186,18 @@ func Load(s string) (*Config, error) {
 }
 
 // LoadFile parses the given YAML file into a Config.
-func LoadFile(filename ...string) (*Config, []byte, error) {
-	contentstring := ""
-
-	for _, File := range filename {
-		content, err := ioutil.ReadFile(File)
-		if err != nil {
-			return nil, nil, err
-		}
-		contentstring += string(content)
+func LoadFile(filename string) (*Config, []byte, error) {
+	content, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, nil, err
 	}
-	cfg, err := Load(contentstring)
+	cfg, err := Load(string(content))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	resolveFilepaths(filepath.Dir(filename[0]), cfg)
-	return cfg, []byte(contentstring), nil
+	resolveFilepaths(filepath.Dir(filename), cfg)
+	return cfg, content, nil
 }
 
 // resolveFilepaths joins all relative paths in a configuration
@@ -440,16 +435,16 @@ func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 // checkReceiver returns an error if a node in the routing tree
 // references a receiver not in the given map.
 func checkReceiver(r *Route, receivers map[string]struct{}) error {
-	for _, sr := range r.Routes {
-		if err := checkReceiver(sr, receivers); err != nil {
-			return err
-		}
-	}
 	if r.Receiver == "" {
 		return nil
 	}
 	if _, ok := receivers[r.Receiver]; !ok {
 		return fmt.Errorf("undefined receiver %q used in route", r.Receiver)
+	}
+	for _, sr := range r.Routes {
+		if err := checkReceiver(sr, receivers); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -686,7 +681,6 @@ func (c *Receiver) UnmarshalYAML(unmarshal func(interface{}) error) error {
 // Regexp encapsulates a regexp.Regexp and makes it YAML marshalable.
 type Regexp struct {
 	*regexp.Regexp
-	original string
 }
 
 // UnmarshalYAML implements the yaml.Unmarshaler interface for Regexp.
@@ -700,14 +694,13 @@ func (re *Regexp) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		return err
 	}
 	re.Regexp = regex
-	re.original = s
 	return nil
 }
 
 // MarshalYAML implements the yaml.Marshaler interface for Regexp.
 func (re Regexp) MarshalYAML() (interface{}, error) {
-	if re.original != "" {
-		return re.original, nil
+	if re.Regexp != nil {
+		return re.String(), nil
 	}
 	return nil, nil
 }
@@ -723,14 +716,13 @@ func (re *Regexp) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	re.Regexp = regex
-	re.original = s
 	return nil
 }
 
 // MarshalJSON implements the json.Marshaler interface for Regexp.
 func (re Regexp) MarshalJSON() ([]byte, error) {
-	if re.original != "" {
-		return json.Marshal(re.original)
+	if re.Regexp != nil {
+		return json.Marshal(re.String())
 	}
 	return nil, nil
 }

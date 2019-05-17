@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	slashpath "path"
 	"path/filepath"
@@ -27,7 +26,6 @@ import (
 
 	"strconv"
 
-	"github.com/go-openapi/analysis/internal"
 	"github.com/go-openapi/jsonpointer"
 	swspec "github.com/go-openapi/spec"
 	"github.com/go-openapi/swag"
@@ -73,14 +71,12 @@ type newRef struct {
 
 // context stores intermediary results from flatten
 type context struct {
-	newRefs  map[string]*newRef
-	warnings []string
+	newRefs map[string]*newRef
 }
 
 func newContext() *context {
 	return &context{
-		newRefs:  make(map[string]*newRef, 150),
-		warnings: make([]string, 0),
+		newRefs: make(map[string]*newRef),
 	}
 }
 
@@ -352,7 +348,7 @@ func (isn *inlineSchemaNamer) Name(key string, schema *swspec.Schema, aschema *A
 			// replace values on schema
 			if err := rewriteSchemaToRef(isn.Spec, key,
 				swspec.MustCreateRef(slashpath.Join(definitionsPath, newName))); err != nil {
-				return fmt.Errorf("error while creating definition %q from inline schema: %v", newName, err)
+				return fmt.Errorf("name inlined schema: %v", err)
 			}
 
 			// rewrite any dependent $ref pointing to this place,
@@ -772,7 +768,7 @@ func rewriteParentRef(spec *swspec.Swagger, key string, ref swspec.Ref) error {
 func cloneSchema(schema *swspec.Schema) (*swspec.Schema, error) {
 	var sch swspec.Schema
 	if err := swag.FromDynamicJSON(schema, &sch); err != nil {
-		return nil, fmt.Errorf("cannot clone schema: %v", err)
+		return nil, fmt.Errorf("name inlined schema: %v", err)
 	}
 	return &sch, nil
 }
@@ -843,36 +839,14 @@ type refRevIdx struct {
 	Keys []string
 }
 
-// normalizePath renders absolute path on remote file refs
-func normalizePath(ref swspec.Ref, opts *FlattenOpts) (normalizedPath string) {
-	if ref.HasFragmentOnly || filepath.IsAbs(ref.String()) {
-		normalizedPath = ref.String()
-		return
-	}
-
-	refURL, _ := url.Parse(ref.String())
-	if refURL.Host != "" {
-		normalizedPath = ref.String()
-		return
-	}
-
-	parts := strings.Split(ref.String(), "#")
-	parts[0] = filepath.Join(filepath.Dir(opts.BasePath), parts[0])
-	normalizedPath = strings.Join(parts, "#")
-	return
-}
-
 func reverseIndexForSchemaRefs(opts *FlattenOpts) map[string]refRevIdx {
 	collected := make(map[string]refRevIdx)
 	for key, schRef := range opts.Spec.references.schemas {
-		// normalize paths before sorting,
-		// so we get together keys in same external file
-		normalizedPath := normalizePath(schRef, opts)
-		if entry, ok := collected[normalizedPath]; ok {
+		if entry, ok := collected[schRef.String()]; ok {
 			entry.Keys = append(entry.Keys, key)
-			collected[normalizedPath] = entry
+			collected[schRef.String()] = entry
 		} else {
-			collected[normalizedPath] = refRevIdx{
+			collected[schRef.String()] = refRevIdx{
 				Ref:  schRef,
 				Keys: []string{key},
 			}
@@ -911,8 +885,7 @@ func saveSchema(spec *swspec.Swagger, name string, schema *swspec.Schema) {
 
 // getPointerFromKey retrieves the content of the JSON pointer "key"
 func getPointerFromKey(spec *swspec.Swagger, key string) (string, interface{}, error) {
-	// unescape chars in key, e.g. "{}" from path params
-	pth, _ := internal.PathUnescape(key[1:])
+	pth := key[1:]
 	ptr, err := jsonpointer.New(pth)
 	if err != nil {
 		return "", nil, err
@@ -920,7 +893,6 @@ func getPointerFromKey(spec *swspec.Swagger, key string) (string, interface{}, e
 
 	value, _, err := ptr.Get(spec)
 	if err != nil {
-		debugLog("error when getting key: %s with path: %s", key, pth)
 		return "", nil, err
 	}
 	return pth, value, nil
@@ -928,8 +900,7 @@ func getPointerFromKey(spec *swspec.Swagger, key string) (string, interface{}, e
 
 // getParentFromKey retrieves the container of the JSON pointer "key"
 func getParentFromKey(spec *swspec.Swagger, key string) (string, string, interface{}, error) {
-	// unescape chars in key, e.g. "{}" from path params
-	pth, _ := internal.PathUnescape(key[1:])
+	pth := key[1:]
 
 	parent, entry := slashpath.Dir(pth), slashpath.Base(pth)
 	debugLog("getting schema holder at: %s, with entry: %s", parent, entry)
@@ -1226,7 +1197,7 @@ func stripOAIGen(opts *FlattenOpts) (bool, error) {
 	return replacedWithComplex, nil
 }
 
-// croak logs notifications and warnings about valid, but possibly unwanted constructs resulting
+// croaks logs notifications and warnings about valid, but possibly unwanted constructs resulting
 // from flattening a spec
 func croak(opts *FlattenOpts) {
 	reported := make(map[string]bool, len(opts.flattenContext.newRefs))
@@ -1240,15 +1211,6 @@ func croak(opts *FlattenOpts) {
 	}
 	for k := range reported {
 		log.Printf("warning: duplicate flattened definition name resolved as %s", k)
-	}
-	// warns about possible type mismatches
-	uniqueMsg := make(map[string]bool)
-	for _, msg := range opts.flattenContext.warnings {
-		if _, ok := uniqueMsg[msg]; ok {
-			continue
-		}
-		log.Printf("warning: %s", msg)
-		uniqueMsg[msg] = true
 	}
 }
 
@@ -1337,17 +1299,12 @@ func namePointers(opts *FlattenOpts) error {
 				continue
 			}
 
-			parts := keyParts(v.Ref.String())
 			debugLog("number of callers for %s: %d", v.Ref.String(), len(callers))
-			// identifying edge case when the namer did nothing because we point to a non-schema object
-			// no definition is created and we expand the $ref for all callers
-			if (!asch.IsSimpleSchema || len(callers) > 1) && !parts.IsSharedParam() && !parts.IsSharedResponse() {
+			if !asch.IsSimpleSchema || len(callers) > 1 {
 				debugLog("replace JSON pointer at [%s] by definition: %s", key, v.Ref.String())
 				if err := namer.Name(v.Ref.String(), v.Schema, asch); err != nil {
 					return err
 				}
-
-				// regular case: we named the $ref as a definition, and we move all callers to this new $ref
 				for _, caller := range callers {
 					if caller != key {
 						// move $ref for next to resolve
@@ -1358,7 +1315,7 @@ func namePointers(opts *FlattenOpts) error {
 					}
 				}
 			} else {
-				debugLog("expand JSON pointer for key=%s", key)
+				debugLog("expand JSON pointer")
 				if err := updateRefWithSchema(opts.Swagger(), key, v.Schema); err != nil {
 					return err
 				}
@@ -1376,6 +1333,7 @@ func namePointers(opts *FlattenOpts) error {
 //
 // NOTE: all external $ref's are assumed to be already expanded at this stage.
 func deepestRef(opts *FlattenOpts, ref swspec.Ref) (swspec.Ref, *swspec.Schema, error) {
+	debugLog("deepestRef for %s", ref.String())
 	if !ref.HasFragmentOnly {
 		// does nothing on external $refs
 		return ref, nil, nil
@@ -1421,46 +1379,6 @@ DOWNREF:
 				break DOWNREF
 			}
 			currentRef = refable.Schema.Ref
-
-		case swspec.Response:
-			// a pointer points to a schema initially marshalled in responses section...
-			// Attempt to convert this to a schema. If this fails, the spec is invalid
-			asJSON, _ := refable.MarshalJSON()
-			var asSchema swspec.Schema
-			err := asSchema.UnmarshalJSON(asJSON)
-			if err != nil {
-				return swspec.Ref{}, nil,
-					fmt.Errorf("invalid type for resolved JSON pointer %s. Expected a schema a, got: %T",
-						currentRef.String(), value)
-
-			}
-			opts.flattenContext.warnings = append(opts.flattenContext.warnings,
-				fmt.Sprintf("found $ref %q (response) interpreted as schema", currentRef.String()))
-
-			if asSchema.Ref.String() == "" {
-				break DOWNREF
-			}
-			currentRef = asSchema.Ref
-
-		case swspec.Parameter:
-			// a pointer points to a schema initially marshalled in parameters section...
-			// Attempt to convert this to a schema. If this fails, the spec is invalid
-			asJSON, _ := refable.MarshalJSON()
-			var asSchema swspec.Schema
-			err := asSchema.UnmarshalJSON(asJSON)
-			if err != nil {
-				return swspec.Ref{}, nil,
-					fmt.Errorf("invalid type for resolved JSON pointer %s. Expected a schema a, got: %T",
-						currentRef.String(), value)
-
-			}
-			opts.flattenContext.warnings = append(opts.flattenContext.warnings,
-				fmt.Sprintf("found $ref %q (parameter) interpreted as schema", currentRef.String()))
-
-			if asSchema.Ref.String() == "" {
-				break DOWNREF
-			}
-			currentRef = asSchema.Ref
 
 		default:
 			return swspec.Ref{}, nil,

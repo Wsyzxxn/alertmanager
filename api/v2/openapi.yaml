@@ -59,7 +59,6 @@ paths:
           description: A list of matchers to filter silences by
           required: false
           type: array
-          collectionFormat: multi
           items:
             type: string
     post:
@@ -155,7 +154,6 @@ paths:
           description: A list of matchers to filter alerts by
           required: false
           type: array
-          collectionFormat: multi
           items:
             type: string
         - name: receiver
@@ -235,7 +233,9 @@ definitions:
         items:
           $ref: '#/definitions/peerStatus'
     required:
+      - name
       - status
+      - peers
   alertmanagerConfig:
     type: object
     properties:
