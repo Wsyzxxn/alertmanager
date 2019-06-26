@@ -86,12 +86,13 @@ const (
 // with this regular expression.
 var LabelNameRE = regexp.MustCompile("^[a-zA-Z_][a-zA-Z0-9_]*$")
 var LabelNameHZ = regexp.MustCompile(`[\p{Han}]+`)
-
 // A LabelName is a key for a LabelSet or Metric.  It has a value associated
 // therewith.
 type LabelName string
 
-// IsValid is true if the label name is string
+// IsValid is true iff the label name matches the pattern of LabelNameRE. This
+// method, however, does not use LabelNameRE for the check but a much faster
+// hardcoded implementation.
 func (ln LabelName) IsValid() bool {
 	if len(ln) == 0 {
 		return false
@@ -102,7 +103,6 @@ func (ln LabelName) IsValid() bool {
 		}
 	}
 	return true
-
 }
 
 // UnmarshalYAML implements the yaml.Unmarshaler interface.

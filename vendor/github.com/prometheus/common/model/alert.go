@@ -27,6 +27,7 @@ const (
 
 // Alert is a generic representation of an alert in the Prometheus eco-system.
 type Alert struct {
+	State int      `json:"state"`
 	// Label value pairs for purpose of aggregation, matching, and disposition
 	// dispatching. This must minimally include an "alertname" label.
 	Labels LabelSet `json:"labels"`
