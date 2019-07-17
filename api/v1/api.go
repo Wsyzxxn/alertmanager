@@ -17,12 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"regexp"
-	"sort"
-	"sync"
-	"time"
-	"strings"
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,7 +24,14 @@ import (
 	"github.com/prometheus/common/route"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/prometheus/pkg/labels"
+	"net/http"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"time"
 
+	"github.com/prometheus/alertmanager/api/metrics"
 	"github.com/prometheus/alertmanager/cluster"
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/dispatch"
@@ -39,13 +40,10 @@ import (
 	"github.com/prometheus/alertmanager/silence"
 	"github.com/prometheus/alertmanager/silence/silencepb"
 	"github.com/prometheus/alertmanager/types"
-	"github.com/prometheus/alertmanager/api/metrics"
-	"strconv"
-	"os"
 	"io/ioutil"
 	logto "log"
-
-
+	"os"
+	"strconv"
 )
 
 var corsHeaders = map[string]string{
@@ -82,7 +80,7 @@ type API struct {
 	peer     *cluster.Peer
 	logger   log.Logger
 
-	m  *metrics.Alerts
+	m *metrics.Alerts
 
 	//numReceivedAlerts *prometheus.CounterVec
 	//numInvalidAlerts  prometheus.Counter
@@ -125,21 +123,24 @@ func New(
 	}*/
 
 	return &API{
-		alerts:            alerts,
-		silences:          silences,
-		getAlertStatus:    sf,
-		uptime:            time.Now(),
-		peer:              peer,
-		logger:            l,
+		alerts:         alerts,
+		silences:       silences,
+		getAlertStatus: sf,
+		uptime:         time.Now(),
+		peer:           peer,
+		logger:         l,
 		//numReceivedAlerts: numReceivedAlerts,
 		//numInvalidAlerts:  numInvalidAlerts,
-		m:              metrics.NewAlerts("v1", r),
+		m: metrics.NewAlerts("v1", r),
 	}
 }
 
+var duplicatelabelname string
+
 // Register registers the API handlers under their correct routes
 // in the given router.
-func (api *API) Register(r *route.Router) {
+func (api *API) Register(r *route.Router, duplicatelabel string) {
+	duplicatelabelname = duplicatelabel
 	wrap := func(f http.HandlerFunc) http.HandlerFunc {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			setCORS(w)
@@ -433,6 +434,13 @@ func (api *API) addAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	//delete duplicate label
+	for _, alert := range alerts {
+		if _, ok := alert.Labels[model.LabelName(duplicatelabelname)]; ok {
+			delete(alert.Labels, model.LabelName(duplicatelabelname))
+		}
+	}
+
 	api.insertAlerts(w, r, alerts...)
 }
 
@@ -461,22 +469,17 @@ func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*
 			alert.EndsAt = now.Add(resolveTimeout)
 		}
 		//alert.ValidUntil = ts.Add(3 * delta)  EndsAt 专门设置的时间大于当前时间
-		if alert.State == 1{
+		if alert.State == 1 {
 			logto.Println("Resolved")
-			logto.Println(alert.Annotations)	
-			api.m.Firing().Inc()	
-		} else {
-			logto.Println("Firing")
-			logto.Println(alert.Annotations)	
-			api.m.Resolved().Inc()
-		}
-		/*if alert.EndsAt.After(time.Now()) {
-			//api.numReceivedAlerts.WithLabelValues("firing").Inc()
+			logto.Println(alert.Labels)
+			logto.Println(alert.Annotations)
 			api.m.Firing().Inc()
 		} else {
-			//api.numReceivedAlerts.WithLabelValues("resolved").Inc()
+			logto.Println("Firing")
+			logto.Println(alert.Labels)
+			logto.Println(alert.Annotations)
 			api.m.Resolved().Inc()
-		}*/
+		}
 	}
 
 	// Make a best effort to insert all alerts that are valid.
@@ -827,15 +830,17 @@ func (api *API) respondError(w http.ResponseWriter, apiErr apiError, data interf
 		level.Error(api.logger).Log("msg", "failed to write data to connection", "err", err)
 	}
 }
+
 var icount = 1
+
 func (api *API) receive(r *http.Request, v interface{}) error {
 	body, err := ioutil.ReadAll(r.Body)
-	err = ioutil.WriteFile("errorteset"+strconv.Itoa(icount),body, 0644)
+	err = ioutil.WriteFile("errorteset"+strconv.Itoa(icount), body, 0644)
 	if err != nil {
 		logto.Println("WriteFile  file failed!")
 		os.Exit(1)
 	}
-	icount +=1
+	icount += 1
 	//dec := json.NewDecoder(r.Body)
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	defer r.Body.Close()

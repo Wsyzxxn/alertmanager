@@ -172,8 +172,8 @@ func New(opts Options) (*API, error) {
 // API, it is enforced for all HTTP request going through this mux. The same is
 // true for the concurrency limit, with the exception that it is only applied to
 // GET requests.
-func (api *API) Register(r *route.Router, routePrefix string) *http.ServeMux {
-	api.v1.Register(r.WithPrefix("/api/v1"))
+func (api *API) Register(r *route.Router, routePrefix string, duplicatelabel string) *http.ServeMux {
+	api.v1.Register(r.WithPrefix("/api/v1"), duplicatelabel)
 
 	mux := http.NewServeMux()
 	mux.Handle("/", api.limitHandler(r))
