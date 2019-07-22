@@ -473,12 +473,12 @@ func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*
 			logto.Println("Resolved")
 			logto.Println(alert.Labels)
 			logto.Println(alert.Annotations)
-			api.m.Firing().Inc()
+			api.m.Resolved().Inc()
 		} else {
 			logto.Println("Firing")
 			logto.Println(alert.Labels)
 			logto.Println(alert.Annotations)
-			api.m.Resolved().Inc()
+			api.m.Firing().Inc()
 		}
 	}
 
