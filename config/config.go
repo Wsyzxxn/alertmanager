@@ -550,13 +550,13 @@ func (r *Route) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	}
 
 	for k := range r.Match {
-		if !model.LabelNameRE.MatchString(k) {
+		if !(model.LabelNameRE.MatchString(k) || model.LabelNameHZ.MatchString(k)) {
 			return fmt.Errorf("invalid label name %q", k)
 		}
 	}
 
 	for k := range r.MatchRE {
-		if !model.LabelNameRE.MatchString(k) {
+		if !(model.LabelNameRE.MatchString(k) || model.LabelNameHZ.MatchString(k)) {
 			return fmt.Errorf("invalid label name %q", k)
 		}
 	}
@@ -624,25 +624,25 @@ func (r *InhibitRule) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	}
 
 	for k := range r.SourceMatch {
-		if !model.LabelNameRE.MatchString(k) {
+		if !(model.LabelNameRE.MatchString(k) || model.LabelNameHZ.MatchString(k)) {
 			return fmt.Errorf("invalid label name %q", k)
 		}
 	}
 
 	for k := range r.SourceMatchRE {
-		if !model.LabelNameRE.MatchString(k) {
+		if !(model.LabelNameRE.MatchString(k) || model.LabelNameHZ.MatchString(k)) {
 			return fmt.Errorf("invalid label name %q", k)
 		}
 	}
 
 	for k := range r.TargetMatch {
-		if !model.LabelNameRE.MatchString(k) {
+		if !(model.LabelNameRE.MatchString(k) || model.LabelNameHZ.MatchString(k)) {
 			return fmt.Errorf("invalid label name %q", k)
 		}
 	}
 
 	for k := range r.TargetMatchRE {
-		if !model.LabelNameRE.MatchString(k) {
+		if !(model.LabelNameRE.MatchString(k) || model.LabelNameHZ.MatchString(k)) {
 			return fmt.Errorf("invalid label name %q", k)
 		}
 	}

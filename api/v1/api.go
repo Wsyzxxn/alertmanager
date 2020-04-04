@@ -17,12 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"regexp"
-	"sort"
-	"sync"
-	"time"
-
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,7 +24,14 @@ import (
 	"github.com/prometheus/common/route"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/prometheus/pkg/labels"
+	"net/http"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"time"
 
+	"github.com/prometheus/alertmanager/api/metrics"
 	"github.com/prometheus/alertmanager/cluster"
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/dispatch"
@@ -39,6 +40,10 @@ import (
 	"github.com/prometheus/alertmanager/silence"
 	"github.com/prometheus/alertmanager/silence/silencepb"
 	"github.com/prometheus/alertmanager/types"
+	"io/ioutil"
+	logto "log"
+	"os"
+	"strconv"
 )
 
 var corsHeaders = map[string]string{
@@ -75,8 +80,10 @@ type API struct {
 	peer     *cluster.Peer
 	logger   log.Logger
 
-	numReceivedAlerts *prometheus.CounterVec
-	numInvalidAlerts  prometheus.Counter
+	m *metrics.Alerts
+
+	//numReceivedAlerts *prometheus.CounterVec
+	//numInvalidAlerts  prometheus.Counter
 
 	getAlertStatus getAlertStatusFn
 
@@ -98,7 +105,7 @@ func New(
 		l = log.NewNopLogger()
 	}
 
-	numReceivedAlerts := prometheus.NewCounterVec(prometheus.CounterOpts{
+	/*numReceivedAlerts := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "alertmanager",
 		Name:      "alerts_received_total",
 		Help:      "The total number of received alerts.",
@@ -113,23 +120,27 @@ func New(
 	numReceivedAlerts.WithLabelValues("resolved")
 	if r != nil {
 		r.MustRegister(numReceivedAlerts, numInvalidAlerts)
-	}
+	}*/
 
 	return &API{
-		alerts:            alerts,
-		silences:          silences,
-		getAlertStatus:    sf,
-		uptime:            time.Now(),
-		peer:              peer,
-		logger:            l,
-		numReceivedAlerts: numReceivedAlerts,
-		numInvalidAlerts:  numInvalidAlerts,
+		alerts:         alerts,
+		silences:       silences,
+		getAlertStatus: sf,
+		uptime:         time.Now(),
+		peer:           peer,
+		logger:         l,
+		//numReceivedAlerts: numReceivedAlerts,
+		//numInvalidAlerts:  numInvalidAlerts,
+		m: metrics.NewAlerts("v1", r),
 	}
 }
 
+var duplicatelabelname string
+
 // Register registers the API handlers under their correct routes
 // in the given router.
-func (api *API) Register(r *route.Router) {
+func (api *API) Register(r *route.Router, duplicatelabel string) {
+	duplicatelabelname = duplicatelabel
 	wrap := func(f http.HandlerFunc) http.HandlerFunc {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			setCORS(w)
@@ -414,12 +425,20 @@ func alertMatchesFilterLabels(a *model.Alert, matchers []*labels.Matcher) bool {
 
 func (api *API) addAlerts(w http.ResponseWriter, r *http.Request) {
 	var alerts []*types.Alert
+
 	if err := api.receive(r, &alerts); err != nil {
 		api.respondError(w, apiError{
 			typ: errorBadData,
 			err: err,
 		}, nil)
 		return
+	}
+
+	//delete duplicate label
+	for _, alert := range alerts {
+		if _, ok := alert.Labels[model.LabelName(duplicatelabelname)]; ok {
+			delete(alert.Labels, model.LabelName(duplicatelabelname))
+		}
 	}
 
 	api.insertAlerts(w, r, alerts...)
@@ -449,10 +468,17 @@ func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*
 			alert.Timeout = true
 			alert.EndsAt = now.Add(resolveTimeout)
 		}
-		if alert.EndsAt.After(time.Now()) {
-			api.numReceivedAlerts.WithLabelValues("firing").Inc()
+		//alert.ValidUntil = ts.Add(3 * delta)  EndsAt 专门设置的时间大于当前时间
+		if alert.State == 1 {
+			logto.Println("Resolved")
+			logto.Println(alert.Labels)
+			logto.Println(alert.Annotations)
+			api.m.Resolved().Inc()
 		} else {
-			api.numReceivedAlerts.WithLabelValues("resolved").Inc()
+			logto.Println("Firing")
+			logto.Println(alert.Labels)
+			logto.Println(alert.Annotations)
+			api.m.Firing().Inc()
 		}
 	}
 
@@ -466,7 +492,8 @@ func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*
 
 		if err := a.Validate(); err != nil {
 			validationErrs.Add(err)
-			api.numInvalidAlerts.Inc()
+			//api.numInvalidAlerts.Inc()
+			api.m.Invalid().Inc()
 			continue
 		}
 		validAlerts = append(validAlerts, a)
@@ -804,11 +831,21 @@ func (api *API) respondError(w http.ResponseWriter, apiErr apiError, data interf
 	}
 }
 
+var icount = 1
+
 func (api *API) receive(r *http.Request, v interface{}) error {
-	dec := json.NewDecoder(r.Body)
+	body, err := ioutil.ReadAll(r.Body)
+	err = ioutil.WriteFile("errorteset"+strconv.Itoa(icount), body, 0644)
+	if err != nil {
+		logto.Println("WriteFile  file failed!")
+		os.Exit(1)
+	}
+	icount += 1
+	//dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(strings.NewReader(string(body)))
 	defer r.Body.Close()
 
-	err := dec.Decode(v)
+	err = dec.Decode(v)
 	if err != nil {
 		level.Debug(api.logger).Log("msg", "Decoding request failed", "err", err)
 	}

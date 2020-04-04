@@ -47,6 +47,8 @@ import (
 	"github.com/prometheus/alertmanager/silence"
 	"github.com/prometheus/alertmanager/silence/silencepb"
 	"github.com/prometheus/alertmanager/types"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/alertmanager/api/metrics"
 )
 
 // API represents an Alertmanager API v2
@@ -67,7 +69,7 @@ type API struct {
 	setAlertStatus     setAlertStatusFn
 
 	logger log.Logger
-
+	m      *metrics.Alerts
 	Handler http.Handler
 }
 
@@ -83,6 +85,7 @@ func NewAPI(
 	silences *silence.Silences,
 	peer *cluster.Peer,
 	l log.Logger,
+	r prometheus.Registerer,
 ) (*API, error) {
 	api := API{
 		alerts:         alerts,
@@ -91,8 +94,10 @@ func NewAPI(
 		peer:           peer,
 		silences:       silences,
 		logger:         l,
+		m :             metrics.NewAlerts("v2",r),
 		uptime:         time.Now(),
 	}
+
 
 	// load embedded swagger file
 	swaggerSpec, err := loads.Analyzed(restapi.SwaggerJSON, "")
@@ -303,11 +308,13 @@ func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.
 			alert.EndsAt = now.Add(resolveTimeout)
 		}
 		// TODO: Take care of the metrics endpoint
-		// if alert.EndsAt.After(time.Now()) {
-		// 	numReceivedAlerts.WithLabelValues("firing").Inc()
-		// } else {
-		// 	numReceivedAlerts.WithLabelValues("resolved").Inc()
-		// }
+		if alert.EndsAt.After(time.Now()) {
+		 	//numReceivedAlerts.WithLabelValues("firing").Inc()
+		 	api.m.Firing().Inc()
+		} else {
+		 	//numReceivedAlerts.WithLabelValues("resolved").Inc()
+		 	api.m.Resolved().Inc()
+		}
 	}
 
 	// Make a best effort to insert all alerts that are valid.
@@ -320,7 +327,8 @@ func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.
 
 		if err := a.Validate(); err != nil {
 			validationErrs.Add(err)
-			// numInvalidAlerts.Inc()
+			//numInvalidAlerts.Inc()
+			api.m.Invalid().Inc()
 			continue
 		}
 		validAlerts = append(validAlerts, a)

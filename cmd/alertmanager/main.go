@@ -104,6 +104,7 @@ func run() int {
 
 	var (
 		configFile      = kingpin.Flag("config.file", "Alertmanager configuration file name.").Default("alertmanager.yml").String()
+		duplicatename   = kingpin.Flag("duplicatename", "Remote duplicate label fo HA").Default("prometheus").String()
 		dataDir         = kingpin.Flag("storage.path", "Base path for data storage.").Default("data/").String()
 		retention       = kingpin.Flag("data.retention", "How long to keep data for.").Default("120h").Duration()
 		alertGCInterval = kingpin.Flag("alerts.gc-interval", "Interval between alert GC.").Default("30m").Duration()
@@ -356,7 +357,7 @@ func run() int {
 
 	ui.Register(router, webReload, logger)
 
-	mux := api.Register(router, *routePrefix)
+	mux := api.Register(router, *routePrefix, *duplicatename)
 
 	srv := http.Server{Addr: *listenAddress, Handler: mux}
 	srvc := make(chan struct{})
